@@ -350,6 +350,7 @@
       const warn = this._$(".warn");
       warn.hidden = true;
       this._$(".pick").hidden = !this._props.showLevelPicker || paged;
+      this._$(".pick").style.display = this._$(".pick").hidden ? "none" : "";
       this._$(".export").hidden = !this._props.showExportButton || paged;
       const collapsibleOn = !!this._props.collapsibleSections && !paged;
 
@@ -369,16 +370,17 @@
         return;
       }
 
-      // level picker
+      // level picker (left empty when hidden: SAC's PDF export prints a hidden <select>'s options)
       const sel = this._$("select");
       sel.textContent = "";
-      for (let i = 1; i <= M.maxDepth; i++) {
+      const pickerShown = !!this._props.showLevelPicker && !paged;
+      for (let i = 1; pickerShown && i <= M.maxDepth; i++) {
         const o = document.createElement("option");
         o.value = String(i); o.textContent = "Level " + i;
         sel.appendChild(o);
       }
       const L = Math.min(Math.max(1, this._props.sectionLevel | 0), M.maxDepth);
-      sel.value = String(L);
+      if (pickerShown) sel.value = String(L);
 
       if (!M.sawParent) {
         warn.hidden = false;
