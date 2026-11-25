@@ -186,7 +186,7 @@
       this._shadow = this.attachShadow({ mode: "open" });
       this._shadow.appendChild(template.content.cloneNode(true));
       this._props = { sectionLevel: 1, showSectionTotals: true, showLevelPicker: true,
-        showDiagnostics: false, groupColumnsByPeriod: true, collapsibleSections: true, startCollapsed: false, shadeGrowthColumns: true, growthShade: "#eef3f8", totalsPosition: "top", showExportButton: true, fullHeight: false, sectionFilter: "", growthColors: true, growthKeyword: "%", positiveColor: "#107e3e", periodKeywords: "DAY,WEEK,MONTH,YEAR", title: "", headerColor: "#1d2d3e", sectionColor: "#e8eef5", negativeColor: "#bb0000" };
+        showDiagnostics: false, groupColumnsByPeriod: true, collapsibleSections: true, startCollapsed: false, shadeGrowthColumns: true, growthShade: "#eef3f8", totalsPosition: "top", showExportButton: true, fullHeight: false, pageSize: 0, pageNumber: 1, sectionFilter: "", growthColors: true, growthKeyword: "%", positiveColor: "#107e3e", periodKeywords: "DAY,WEEK,MONTH,YEAR", columnOrder: "LY,TY,%", title: "", headerColor: "#1d2d3e", sectionColor: "#e8eef5", negativeColor: "#bb0000" };
       this._binding = null;
       this._collapsed = new Map();   // section id -> collapsed? (user toggles)
       this._nodeCollapsed = new Set(); // member rows (below section level) the user collapsed
@@ -322,13 +322,17 @@
       root.style.setProperty("--gshade", this._props.growthShade);
       this._$(".title").textContent = this._props.title || "";
       this._sectionIds = [];
-      if (this._props.fullHeight) root.setAttribute("data-full", ""); else root.removeAttribute("data-full");
+      // paged mode: this instance shows one page of the table (for PDF export / publications)
+      const pageSize = Math.max(0, parseInt(this._props.pageSize, 10) || 0);
+      const paged = pageSize > 0;
+      if (this._props.fullHeight || paged) root.setAttribute("data-full", ""); else root.removeAttribute("data-full");
       const host = this._$(".scroll");
       host.textContent = "";
       const warn = this._$(".warn");
       warn.hidden = true;
-      this._$(".pick").hidden = !this._props.showLevelPicker;
-      this._$(".export").hidden = !this._props.showExportButton;
+      this._$(".pick").hidden = !this._props.showLevelPicker || paged;
+      this._$(".export").hidden = !this._props.showExportButton || paged;
+      const collapsibleOn = !!this._props.collapsibleSections && !paged;
 
       const diag = this._$("pre");
       diag.hidden = !this._props.showDiagnostics;
@@ -388,8 +392,18 @@
             c.sub = s || c.label;
           }
         });
-        // keep each period together; unmatched measures stay first, original order kept within a group
-        cols = cols.map((c, idx) => ({ c, idx })).sort((a, b) => (a.c.group - b.c.group) || (a.idx - b.idx)).map((x) => x.c);
+        // keep each period together; unmatched measures stay first.
+        // Within a period, order by "Column order" (e.g. LY,TY,%); unlisted columns keep SAC's order, after the listed ones.
+        const ord = String(this._props.columnOrder || "").split(",").map((s) => s.trim()).filter(Boolean);
+        const rank = (c) => {
+          const s = (c.sub || c.label).toUpperCase();
+          const i = ord.findIndex((k) => /^[A-Za-z0-9]+$/.test(k)
+            ? new RegExp("(^|[^A-Za-z0-9])" + esc(k.toUpperCase()) + "([^A-Za-z0-9]|$)").test(s)
+            : s.includes(k.toUpperCase()));
+          return i < 0 ? ord.length : i;
+        };
+        cols = cols.map((c, idx) => ({ c, idx, r: c.group >= 0 ? rank(c) : 0 }))
+          .sort((a, b) => (a.c.group - b.c.group) || (a.r - b.r) || (a.idx - b.idx)).map((x) => x.c);
       }
       M = Object.assign({}, M, { cols });
 
@@ -446,7 +460,7 @@
           const l = tr.insertCell(); l.className = "l";
           if (i === 0) {
             l.textContent = labelOverride || node.label; l.style.paddingLeft = (8 + indent * 16) + "px";
-            if (expandable && node.children.length && this._props.collapsibleSections) {
+            if (expandable && node.children.length && collapsibleOn) {
               l.classList.add("has");
               l.setAttribute("role", "button"); l.setAttribute("tabindex", "0");
               l._nid = node.id; tr._lbl = l;
@@ -477,7 +491,7 @@
           tbody = sectionBody();         // own <tbody> so print CSS can keep it on one page
           tbody.className = "section";
           this._sectionIds.push(node.id);
-          const collapsible = !!this._props.collapsibleSections;
+          const collapsible = collapsibleOn;
           const isCollapsed = collapsible && (this._collapsed.has(node.id) ? this._collapsed.get(node.id) : this._collapsedDefault());
           if (isCollapsed) tbody.classList.add("collapsed");
           if (collapsible) tbody.classList.add("collapsible");
@@ -503,8 +517,88 @@
       };
       M.roots.forEach(visit);
 
+      if (paged) {
+        const n = this._paginate(table, pageSize);
+        const p = Math.max(1, parseInt(this._props.pageNumber, 10) || 1);
+        if (p > n) {
+          const d = document.createElement("div");
+          d.className = "msg";
+          d.textContent = "Page " + p + " is empty: the table has " + n + " page(s) at " + pageSize + " rows per page.";
+          host.appendChild(d);
+          return;
+        }
+        this._keepPage(table, p);
+      } else {
+        this._pages = null;
+      }
       host.appendChild(table);
-      this._applyVis(table);
+      if (!paged) this._applyVis(table);
+    }
+
+    /* ---- paging (PDF export draws only the widget frame, so each instance shows one page) ----
+     * Rows are kept in groups: a row marked "keep" (e.g. TOTAL) stays with the next (EXISTING).
+     * Whole sections are moved to the next page when they don't fit; a section longer than a
+     * page is split and continues under a repeated section band marked "(cont.)". */
+    _paginate(table, size) {
+      const groupsOf = (rows) => {
+        const out = []; let g = [];
+        rows.forEach((r) => { g.push(r); if (!r.classList.contains("keep")) { out.push(g); g = []; } });
+        if (g.length) out.push(g);
+        return out;
+      };
+      const pages = [[]];
+      let used = 0;
+      const cur = () => pages[pages.length - 1];
+      const newPage = () => { pages.push([]); used = 0; };
+      for (const body of Array.from(table.tBodies)) {
+        const rows = Array.from(body.rows);
+        if (!rows.length) continue;
+        const isSec = body.classList.contains("section");
+        if (!isSec) {                          // grand-total rows above the sections
+          for (const g of groupsOf(rows)) {
+            if (used + g.length > size && used > 0) newPage();
+            cur().push({ body, rows: g, cont: false }); used += g.length;
+          }
+          continue;
+        }
+        if (used + rows.length > size && used > 0 && rows.length <= size) newPage();
+        if (used + rows.length <= size) { cur().push({ body, rows, cont: false }); used += rows.length; continue; }
+        // section longer than the space left: split it, band first
+        const band = rows[0];
+        const groups = groupsOf(rows.slice(1));
+        if (used > 0 && size - used < 1 + (groups[0] ? groups[0].length : 0)) newPage();
+        let entry = { body, rows: [band], cont: false }; cur().push(entry); used += 1;
+        for (const g of groups) {
+          if (used + g.length > size && entry.rows.length > 1) {
+            newPage();
+            entry = { body, rows: [band], cont: true }; cur().push(entry); used += 1;
+          }
+          entry.rows.push(...g); used += g.length;
+        }
+      }
+      this._pages = pages.filter((p) => p.length);
+      return this._pages.length || 1;
+    }
+    _keepPage(table, p) {
+      const page = (this._pages || [])[p - 1] || [];
+      Array.from(table.tBodies).forEach((b) => b.remove());
+      for (const e of page) {
+        const tb = table.createTBody();
+        tb.className = e.body.className;
+        e.rows.forEach((r, i) => {
+          if (i === 0 && e.cont) {
+            const c = r.cloneNode(true);
+            c.cells[0].textContent = r.cells[0].textContent + " (cont.)";
+            tb.appendChild(c);
+          } else tb.appendChild(r);
+        });
+      }
+    }
+    getPageCount() { return this._pages ? this._pages.length || 1 : 1; }
+    setPageNumber(n) {
+      this._props.pageNumber = Math.max(1, parseInt(n, 10) || 1);
+      this.dispatchEvent(new CustomEvent("propertiesChanged", { detail: { properties: { pageNumber: this._props.pageNumber } } }));
+      this._render();
     }
 
     // show/hide member rows whose ancestor (below the section) is collapsed
