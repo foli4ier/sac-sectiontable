@@ -14,6 +14,7 @@
     <label>Full height (PDF)</label><input id="fullHeight" type="checkbox">
     <label>Rows per page (PDF)</label><input id="pageSize" type="number" min="0" max="500" title="0 = off">
     <label>Page number</label><input id="pageNumber" type="number" min="1" max="999">
+    <label>Page buttons</label><input id="showPager" type="checkbox" title="Prev/Next buttons for viewers; switch off on PDF/publication pages">
     <label>Section filter</label><input id="sectionFilter" type="text" placeholder="e.g. Eastern Cape Checkers">
     <label>Export button</label><input id="showExportButton" type="checkbox">
     <label>Totals position</label><select id="totalsPosition"><option value="top">Top of section</option><option value="bottom">Bottom of section</option></select>
