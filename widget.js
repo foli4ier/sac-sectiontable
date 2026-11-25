@@ -16,6 +16,10 @@
     select { font:inherit; padding:2px 4px; }
     .export { font:inherit; padding:2px 10px; cursor:pointer; border:1px solid #0a6ed1; background:#fff; color:#0a6ed1; border-radius:4px; }
     .export:hover { background:#ebf5fe; }
+    .pager { display:inline-flex; align-items:center; gap:6px; font-size:12px; }
+    .pager[hidden] { display:none; }
+    .pg { font:inherit; padding:1px 8px; cursor:pointer; border:1px solid #0a6ed1; background:#fff; color:#0a6ed1; border-radius:4px; }
+    .pg:disabled { opacity:.35; cursor:default; }
     .scroll { overflow:auto; flex:1; }
     table { border-collapse:collapse; width:100%; }
     th, td { padding:4px 8px; white-space:nowrap; border-bottom:1px solid #d9d9d9; }
@@ -59,7 +63,7 @@
     }
   </style>
   <div class="wrap">
-    <div class="bar"><span class="title"></span><label class="pick">Section level: <select></select></label><button class="export" type="button">Export to Excel</button></div>
+    <div class="bar"><span class="title"></span><span class="pager" hidden><button class="pg prev" type="button" aria-label="Previous page">&#9664;</button><span class="pglbl"></span><button class="pg next" type="button" aria-label="Next page">&#9654;</button></span><label class="pick">Section level: <select></select></label><button class="export" type="button">Export to Excel</button></div>
     <div class="warn" hidden></div>
     <div class="scroll"></div>
     <pre hidden></pre>
@@ -186,7 +190,7 @@
       this._shadow = this.attachShadow({ mode: "open" });
       this._shadow.appendChild(template.content.cloneNode(true));
       this._props = { sectionLevel: 1, showSectionTotals: true, showLevelPicker: true,
-        showDiagnostics: false, groupColumnsByPeriod: true, collapsibleSections: true, startCollapsed: false, shadeGrowthColumns: true, growthShade: "#eef3f8", totalsPosition: "top", showExportButton: true, fullHeight: false, pageSize: 0, pageNumber: 1, sectionFilter: "", growthColors: true, growthKeyword: "%", positiveColor: "#107e3e", periodKeywords: "DAY,WEEK,MONTH,YEAR", columnOrder: "LY,TY,%", title: "", headerColor: "#1d2d3e", sectionColor: "#e8eef5", negativeColor: "#bb0000" };
+        showDiagnostics: false, groupColumnsByPeriod: true, collapsibleSections: true, startCollapsed: false, shadeGrowthColumns: true, growthShade: "#eef3f8", totalsPosition: "top", showExportButton: true, showPager: true, fullHeight: false, pageSize: 0, pageNumber: 1, sectionFilter: "", growthColors: true, growthKeyword: "%", positiveColor: "#107e3e", periodKeywords: "DAY,WEEK,MONTH,YEAR", columnOrder: "LY,TY,%", title: "", headerColor: "#1d2d3e", sectionColor: "#e8eef5", negativeColor: "#bb0000" };
       this._binding = null;
       this._collapsed = new Map();   // section id -> collapsed? (user toggles)
       this._nodeCollapsed = new Set(); // member rows (below section level) the user collapsed
@@ -195,6 +199,11 @@
       this._model = null;
       this._$ = (s) => this._shadow.querySelector(s);
       this._$(".export").addEventListener("click", () => this.exportToExcel());
+      // view-time paging: moves only the on-screen page, never changes the saved pageNumber
+      this._viewPage = null;
+      const step = (d) => { const n = this.getPageCount(); this._viewPage = Math.min(n, Math.max(1, this._curPage() + d)); this._render(); };
+      this._$(".prev").addEventListener("click", () => step(-1));
+      this._$(".next").addEventListener("click", () => step(1));
       this._$("select").addEventListener("change", (e) => {
         const lvl = parseInt(e.target.value, 10);
         this._props.sectionLevel = lvl;
@@ -205,7 +214,10 @@
     }
 
     /* ---- SAC lifecycle ---- */
-    onCustomWidgetBeforeUpdate(changed) { Object.assign(this._props, changed); }
+    onCustomWidgetBeforeUpdate(changed) {
+      if (changed && (changed.pageNumber !== undefined || changed.pageSize !== undefined)) this._viewPage = null;
+      Object.assign(this._props, changed);
+    }
     onCustomWidgetAfterUpdate(changed) {
       if (changed && changed.tableBinding !== undefined) this._binding = changed.tableBinding;
       this._buildModel();
@@ -313,7 +325,14 @@
     }
 
     /* ---- rendering ---- */
+    _curPage() { return this._viewPage || Math.max(1, parseInt(this._props.pageNumber, 10) || 1); }
     _render() {
+      this._$(".pager").hidden = true;
+      this._renderInner();
+      // SAC developer guide: tells the export framework the widget has finished rendering
+      this.dispatchEvent(new Event("customWidgetRenderComplete"));
+    }
+    _renderInner() {
       const root = this._shadow.host;
       root.style.setProperty("--hdr", this._props.headerColor);
       root.style.setProperty("--sec", this._props.sectionColor);
@@ -519,7 +538,12 @@
 
       if (paged) {
         const n = this._paginate(table, pageSize);
-        const p = Math.max(1, parseInt(this._props.pageNumber, 10) || 1);
+        const p = this._curPage();
+        const pager = this._$(".pager");
+        pager.hidden = !this._props.showPager;
+        this._$(".pglbl").textContent = "Page " + Math.min(p, n) + " of " + n;
+        this._$(".prev").disabled = p <= 1;
+        this._$(".next").disabled = p >= n;
         if (p > n) {
           const d = document.createElement("div");
           d.className = "msg";
@@ -597,6 +621,7 @@
     getPageCount() { return this._pages ? this._pages.length || 1 : 1; }
     setPageNumber(n) {
       this._props.pageNumber = Math.max(1, parseInt(n, 10) || 1);
+      this._viewPage = null;
       this.dispatchEvent(new CustomEvent("propertiesChanged", { detail: { properties: { pageNumber: this._props.pageNumber } } }));
       this._render();
     }
